@@ -1,4 +1,11 @@
-use rmcp::{model::*, service::RequestContext, tool, Error as McpError, RoleServer, ServerHandler};
+use rmcp::{
+    model::{
+        CallToolResult, Content, Implementation, InitializeRequestParam, InitializeResult,
+        ProtocolVersion, ServerCapabilities, ServerInfo,
+    },
+    service::RequestContext,
+    tool, Error as McpError, RoleServer, ServerHandler,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -78,9 +85,7 @@ impl ElmService {
         &self,
         #[tool(param)] search_string: String,
     ) -> Result<CallToolResult, McpError> {
-        let string_is_valid = search_string
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        let string_is_valid = validate_string(&search_string);
 
         if !string_is_valid {
             return Err(McpError::internal_error(
@@ -90,8 +95,8 @@ impl ElmService {
         }
 
         let mut lock = self.packages.lock().await;
-        let data = match lock.clone() {
-            Some(cache) => cache,
+        let data = match &*lock {
+            Some(cache) => cache.clone(),
             None => {
                 let data: Vec<Package> = reqwest::get("https://package.elm-lang.org/search.json")
                     .await
@@ -118,9 +123,7 @@ impl ElmService {
 
     #[tool(description = "Compiles and validates the current Elm project")]
     async fn validate(&self) -> Result<CallToolResult, McpError> {
-        let Some(path) = ELM_PROJECT_FOLDER else {
-            return Err(McpError::internal_error("Missing project path", None));
-        };
+        let path = get_project_folder()?;
         let output = std::process::Command::new("elm")
             .arg("make")
             .arg("--output=/dev/null")
@@ -138,13 +141,8 @@ impl ElmService {
                 "OK".to_string(),
             )]))
         } else {
-            let err_data: serde_json::Value =
-                serde_json::from_str(&err)
-                    .ok()
-                    .ok_or(McpError::internal_error(
-                        "Compile error serialize fail",
-                        None,
-                    ))?;
+            let err_data: serde_json::Value = serde_json::from_str(&err)
+                .map_err(|_| McpError::internal_error("Compile error serialize fail", None))?;
             let out = Content::json(err_data)?;
             Ok(CallToolResult::success(vec![out]))
         }
@@ -156,13 +154,12 @@ impl ElmService {
         #[tool(param)] username: String,
         #[tool(param)] package: String,
     ) -> Result<CallToolResult, McpError> {
-        let Some(path) = ELM_PROJECT_FOLDER else {
-            return Err(McpError::internal_error("Missing project path", None));
-        };
+        let path = get_project_folder()?;
+        let package = validate_package(&username, &package)?;
         let output = std::process::Command::new("elm-json")
             .arg("install")
             .arg("--yes")
-            .arg(format!("{username}/{package}"))
+            .arg(package)
             .current_dir(&path)
             .output()
             .map_err(|e| McpError::internal_error(format!("Failed to install: {}", e), None))?;
@@ -183,16 +180,15 @@ impl ElmService {
         #[tool(param)] username: String,
         #[tool(param)] package: String,
     ) -> Result<CallToolResult, McpError> {
-        let Some(path) = ELM_PROJECT_FOLDER else {
-            return Err(McpError::internal_error("Missing project path", None));
-        };
+        let path = get_project_folder()?;
+        let package = validate_package(&username, &package)?;
         let output = std::process::Command::new("elm-json")
             .arg("uninstall")
             .arg("--yes")
-            .arg(format!("{username}/{package}"))
+            .arg(package)
             .current_dir(&path)
             .output()
-            .map_err(|e| McpError::internal_error(format!("Failed to install: {}", e), None))?;
+            .map_err(|e| McpError::internal_error(format!("Failed to uninstall: {}", e), None))?;
         let err = String::from_utf8_lossy(&output.stderr);
         if err.is_empty() {
             Ok(CallToolResult::success(vec![Content::text(
@@ -231,4 +227,26 @@ impl ServerHandler for ElmService {
         }
         Ok(self.get_info())
     }
+}
+
+fn validate_string(val: &str) -> bool {
+    val.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn validate_package(username: &str, package: &str) -> Result<String, McpError> {
+    if !validate_string(username) && !validate_string(package) {
+        return Err(McpError::internal_error(
+            "Allowed characters: digits (0-9), lowercase letters (a-z), hyphen (-)",
+            None,
+        ));
+    }
+    Ok(format!("{username}/{package}"))
+}
+
+fn get_project_folder() -> Result<String, McpError> {
+    let Some(path) = ELM_PROJECT_FOLDER else {
+        return Err(McpError::internal_error("Missing project path", None));
+    };
+    Ok(path.to_string())
 }
