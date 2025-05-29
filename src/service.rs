@@ -1,3 +1,4 @@
+use crate::client::{ElmClient, Package};
 use rmcp::{
     model::{
         CallToolResult, Content, Implementation, InitializeRequestParam, InitializeResult,
@@ -6,21 +7,13 @@ use rmcp::{
     service::RequestContext,
     tool, Error as McpError, RoleServer, ServerHandler,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct ElmService {
     packages: Arc<Mutex<Option<Vec<Package>>>>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct Package {
-    name: String,
-    summary: String,
-    license: String,
-    version: String,
+    client: ElmClient,
 }
 
 const ELM_PROJECT_FOLDER: Option<&str> = std::option_env!("ELM_PROJECT_FOLDER");
@@ -30,6 +23,7 @@ impl ElmService {
     pub fn new() -> Self {
         Self {
             packages: Default::default(),
+            client: ElmClient::new(),
         }
     }
 
@@ -39,23 +33,11 @@ impl ElmService {
         #[tool(param)] username: String,
         #[tool(param)] package: String,
     ) -> Result<CallToolResult, McpError> {
-        let releases: HashMap<String, u32> = reqwest::get(format!(
-            "https://package.elm-lang.org/packages/{}/{}/releases.json",
-            username, package
-        ))
-        .await
-        .map_err(|e| McpError::internal_error(format!("Package fetch fail: {}", e), None))?
-        .json()
-        .await
-        .map_err(|e| McpError::internal_error(format!("Package decode fail: {}", e), None))?;
-        let latest_version = releases
-            .iter()
-            .max_by_key(|&(_, timestamp)| timestamp)
-            .map(|(version, _)| version)
-            .ok_or(McpError::internal_error("Package list empty", None))?;
-        Ok(CallToolResult::success(vec![Content::text(
-            latest_version.to_string(),
-        )]))
+        let latest_version = self
+            .client
+            .get_latest_package_version(&username, &package)
+            .await?;
+        Ok(CallToolResult::success(vec![Content::text(latest_version)]))
     }
 
     #[tool(description = "Gets the docs for a specified Elm package")]
@@ -65,15 +47,7 @@ impl ElmService {
         #[tool(param)] package: String,
         #[tool(param)] version: String,
     ) -> Result<CallToolResult, McpError> {
-        let docs: serde_json::Value = reqwest::get(format!(
-            "https://package.elm-lang.org/packages/{}/{}/{}/docs.json",
-            username, package, version
-        ))
-        .await
-        .map_err(|e| McpError::internal_error(format!("Package fetch fail: {}", e), None))?
-        .json()
-        .await
-        .map_err(|e| McpError::internal_error(format!("Package decode fail: {}", e), None))?;
+        let docs = self.client.get_docs(&username, &package, &version).await?;
         let out = Content::json(docs)?;
         Ok(CallToolResult::success(vec![out]))
     }
@@ -98,16 +72,7 @@ impl ElmService {
         let data = match &*lock {
             Some(cache) => cache.clone(),
             None => {
-                let data: Vec<Package> = reqwest::get("https://package.elm-lang.org/search.json")
-                    .await
-                    .map_err(|e| {
-                        McpError::internal_error(format!("Packages fetch fail: {}", e), None)
-                    })?
-                    .json()
-                    .await
-                    .map_err(|e| {
-                        McpError::internal_error(format!("Packages decode fail: {}", e), None)
-                    })?;
+                let data = self.client.fetch_all_packages().await?;
                 *lock = Some(data.clone());
                 data
             }
