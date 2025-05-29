@@ -71,11 +71,24 @@ impl ElmService {
         Ok(CallToolResult::success(vec![out]))
     }
 
-    #[tool(description = "Search Elm packages by package name")]
+    #[tool(
+        description = "Search Elm packages by package name. Allowed characters: digits (0-9), lowercase letters (a-z), hyphen (-)"
+    )]
     async fn search_packages(
         &self,
         #[tool(param)] search_string: String,
     ) -> Result<CallToolResult, McpError> {
+        let string_is_valid = search_string
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+
+        if !string_is_valid {
+            return Err(McpError::internal_error(
+                "Allowed characters: digits (0-9), lowercase letters (a-z), hyphen (-)",
+                None,
+            ));
+        }
+
         let mut lock = self.packages.lock().await;
         let data = match lock.clone() {
             Some(cache) => cache,
