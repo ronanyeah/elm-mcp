@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "inspect": "npx @modelcontextprotocol/inspector"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "^0.13.0"
+  }
+}
