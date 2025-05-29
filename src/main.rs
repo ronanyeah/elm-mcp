@@ -6,7 +6,7 @@ use tracing_subscriber::{
     {self},
 };
 
-const BIND_ADDRESS: &str = "127.0.0.1:9393";
+const PORT: Option<&str> = std::option_env!("PORT");
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -18,8 +18,10 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let bind_address = format!("127.0.0.1:{}", PORT.ok_or(anyhow::anyhow!("missing PORT"))?);
+
     let config = SseServerConfig {
-        bind: BIND_ADDRESS.parse()?,
+        bind: bind_address.parse()?,
         sse_path: "/sse".to_string(),
         post_path: "/message".to_string(),
         ct: tokio_util::sync::CancellationToken::new(),

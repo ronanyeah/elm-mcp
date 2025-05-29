@@ -5,7 +5,15 @@ use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct ElmService {
-    packages: Arc<Mutex<Option<serde_json::Value>>>,
+    packages: Arc<Mutex<Option<Vec<Package>>>>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Package {
+    name: String,
+    summary: String,
+    license: String,
+    version: String,
 }
 
 const ELM_PROJECT_FOLDER: Option<&str> = std::option_env!("ELM_PROJECT_FOLDER");
@@ -63,28 +71,35 @@ impl ElmService {
         Ok(CallToolResult::success(vec![out]))
     }
 
-    #[tool(description = "Gets all available Elm packages")]
-    async fn get_packages(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "Search Elm packages by package name")]
+    async fn search_packages(
+        &self,
+        #[tool(param)] search_string: String,
+    ) -> Result<CallToolResult, McpError> {
         let mut lock = self.packages.lock().await;
         let data = match lock.clone() {
             Some(cache) => cache,
             None => {
-                let data: serde_json::Value =
-                    reqwest::get("https://package.elm-lang.org/search.json")
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Packages fetch fail: {}", e), None)
-                        })?
-                        .json()
-                        .await
-                        .map_err(|e| {
-                            McpError::internal_error(format!("Packages decode fail: {}", e), None)
-                        })?;
+                let data: Vec<Package> = reqwest::get("https://package.elm-lang.org/search.json")
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(format!("Packages fetch fail: {}", e), None)
+                    })?
+                    .json()
+                    .await
+                    .map_err(|e| {
+                        McpError::internal_error(format!("Packages decode fail: {}", e), None)
+                    })?;
                 *lock = Some(data.clone());
                 data
             }
         };
-        let out = Content::json(data)?;
+        let val = search_string.to_lowercase();
+        let results: Vec<_> = data
+            .into_iter()
+            .filter(|pkg| pkg.name.contains(&val))
+            .collect();
+        let out = Content::json(results)?;
         Ok(CallToolResult::success(vec![out]))
     }
 
@@ -105,7 +120,6 @@ impl ElmService {
             })?;
 
         let err = String::from_utf8_lossy(&output.stderr);
-
         if err.is_empty() {
             Ok(CallToolResult::success(vec![Content::text(
                 "OK".to_string(),
@@ -119,6 +133,60 @@ impl ElmService {
                         None,
                     ))?;
             let out = Content::json(err_data)?;
+            Ok(CallToolResult::success(vec![out]))
+        }
+    }
+
+    #[tool(description = "Adds a package to current Elm project")]
+    async fn add_package(
+        &self,
+        #[tool(param)] username: String,
+        #[tool(param)] package: String,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(path) = ELM_PROJECT_FOLDER else {
+            return Err(McpError::internal_error("Missing project path", None));
+        };
+        let output = std::process::Command::new("elm-json")
+            .arg("install")
+            .arg("--yes")
+            .arg(format!("{username}/{package}"))
+            .current_dir(&path)
+            .output()
+            .map_err(|e| McpError::internal_error(format!("Failed to install: {}", e), None))?;
+        let err = String::from_utf8_lossy(&output.stderr);
+        if err.is_empty() {
+            Ok(CallToolResult::success(vec![Content::text(
+                "OK".to_string(),
+            )]))
+        } else {
+            let out = Content::text(err);
+            Ok(CallToolResult::success(vec![out]))
+        }
+    }
+
+    #[tool(description = "Removes a package from current Elm project")]
+    async fn remove_package(
+        &self,
+        #[tool(param)] username: String,
+        #[tool(param)] package: String,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(path) = ELM_PROJECT_FOLDER else {
+            return Err(McpError::internal_error("Missing project path", None));
+        };
+        let output = std::process::Command::new("elm-json")
+            .arg("uninstall")
+            .arg("--yes")
+            .arg(format!("{username}/{package}"))
+            .current_dir(&path)
+            .output()
+            .map_err(|e| McpError::internal_error(format!("Failed to install: {}", e), None))?;
+        let err = String::from_utf8_lossy(&output.stderr);
+        if err.is_empty() {
+            Ok(CallToolResult::success(vec![Content::text(
+                "OK".to_string(),
+            )]))
+        } else {
+            let out = Content::text(err);
             Ok(CallToolResult::success(vec![out]))
         }
     }
