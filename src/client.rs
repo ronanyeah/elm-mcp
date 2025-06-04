@@ -1,4 +1,3 @@
-use rmcp::Error as McpError;
 use std::collections::HashMap;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -25,7 +24,7 @@ impl ElmClient {
         &self,
         username: &str,
         package: &str,
-    ) -> Result<String, McpError> {
+    ) -> anyhow::Result<String> {
         let releases: HashMap<String, u32> = self
             .client
             .get(format!(
@@ -34,16 +33,16 @@ impl ElmClient {
             ))
             .send()
             .await
-            .map_err(|e| McpError::internal_error(format!("Package fetch fail: {}", e), None))?
+            .map_err(fail("PACKAGE_FETCH_FAIL"))?
             .json()
             .await
-            .map_err(|e| McpError::internal_error(format!("Package decode fail: {}", e), None))?;
+            .map_err(fail("PACKAGE_DECODE_FAIL"))?;
 
         releases
             .iter()
             .max_by_key(|&(_, timestamp)| timestamp)
             .map(|(version, _)| version.clone())
-            .ok_or(McpError::internal_error("Package list empty", None))
+            .ok_or(anyhow::anyhow!("PACKAGE_LIST_EMPTY"))
     }
 
     pub async fn get_docs(
@@ -51,28 +50,41 @@ impl ElmClient {
         username: &str,
         package: &str,
         version: &str,
-    ) -> Result<serde_json::Value, McpError> {
-        self.client
+    ) -> anyhow::Result<serde_json::Value> {
+        let res = self
+            .client
             .get(format!(
                 "https://package.elm-lang.org/packages/{}/{}/{}/docs.json",
                 username, package, version
             ))
             .send()
             .await
-            .map_err(|e| McpError::internal_error(format!("Docs fetch fail: {}", e), None))?
+            .map_err(fail("DOCS_FETCH_FAIL"))?
             .json()
             .await
-            .map_err(|e| McpError::internal_error(format!("Docs decode fail: {}", e), None))
+            .map_err(fail("DOCS_DECODE_FAIL"))?;
+
+        Ok(res)
     }
 
-    pub async fn fetch_all_packages(&self) -> Result<Vec<Package>, McpError> {
-        self.client
+    pub async fn fetch_all_packages(&self) -> anyhow::Result<Vec<Package>> {
+        let res = self
+            .client
             .get("https://package.elm-lang.org/search.json")
             .send()
             .await
-            .map_err(|e| McpError::internal_error(format!("Packages fetch fail: {}", e), None))?
+            .map_err(fail("PACKAGES_FETCH_FAIL"))?
             .json()
             .await
-            .map_err(|e| McpError::internal_error(format!("Packages decode fail: {}", e), None))
+            .map_err(fail("PACKAGES_DECODE_FAIL"))?;
+
+        Ok(res)
+    }
+}
+
+fn fail<E: std::fmt::Debug>(tag: &str) -> impl Fn(E) -> anyhow::Error {
+    move |err: E| {
+        eprintln!("{}:\n{:#?}", tag, err);
+        anyhow::anyhow!("{tag}")
     }
 }

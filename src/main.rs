@@ -1,15 +1,17 @@
 use elm_mcp::service::ElmService;
 use rmcp::transport::sse_server::{SseServer, SseServerConfig};
-use tracing_subscriber::{
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-    {self},
-};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-const PORT: Option<&str> = std::option_env!("PORT");
+#[derive(serde::Deserialize)]
+struct Env {
+    port: u16,
+    project_folder: String,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let env = envy::from_env::<Env>()?;
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -18,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let bind_address = format!("127.0.0.1:{}", PORT.ok_or(anyhow::anyhow!("missing PORT"))?);
+    let bind_address = format!("127.0.0.1:{}", env.port);
 
     let config = SseServerConfig {
         bind: bind_address.parse()?,
@@ -45,9 +47,10 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let ct = sse_server.with_service(ElmService::new);
+    let ct = sse_server.with_service(move || ElmService::new(&env.project_folder));
 
     tokio::signal::ctrl_c().await?;
     ct.cancel();
+
     Ok(())
 }

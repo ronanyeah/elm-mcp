@@ -5,7 +5,7 @@ use rmcp::{
         ProtocolVersion, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
-    tool, Error as McpError, RoleServer, ServerHandler,
+    tool, RoleServer, ServerHandler,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -14,16 +14,16 @@ use tokio::sync::Mutex;
 pub struct ElmService {
     packages: Arc<Mutex<Option<Vec<Package>>>>,
     client: ElmClient,
+    project_folder: String,
 }
-
-const ELM_PROJECT_FOLDER: Option<&str> = std::option_env!("ELM_PROJECT_FOLDER");
 
 #[tool(tool_box)]
 impl ElmService {
-    pub fn new() -> Self {
+    pub fn new(project_folder: &str) -> Self {
         Self {
             packages: Default::default(),
             client: ElmClient::new(),
+            project_folder: project_folder.to_string(),
         }
     }
 
@@ -32,11 +32,12 @@ impl ElmService {
         &self,
         #[tool(param)] username: String,
         #[tool(param)] package: String,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResult, rmcp::Error> {
         let latest_version = self
             .client
             .get_latest_package_version(&username, &package)
-            .await?;
+            .await
+            .map_err(convert_error)?;
         Ok(CallToolResult::success(vec![Content::text(latest_version)]))
     }
 
@@ -46,8 +47,12 @@ impl ElmService {
         #[tool(param)] username: String,
         #[tool(param)] package: String,
         #[tool(param)] version: String,
-    ) -> Result<CallToolResult, McpError> {
-        let docs = self.client.get_docs(&username, &package, &version).await?;
+    ) -> Result<CallToolResult, rmcp::Error> {
+        let docs = self
+            .client
+            .get_docs(&username, &package, &version)
+            .await
+            .map_err(convert_error)?;
         let out = Content::json(docs)?;
         Ok(CallToolResult::success(vec![out]))
     }
@@ -58,11 +63,11 @@ impl ElmService {
     async fn search_packages(
         &self,
         #[tool(param)] search_string: String,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResult, rmcp::Error> {
         let string_is_valid = validate_string(&search_string);
 
         if !string_is_valid {
-            return Err(McpError::internal_error(
+            return Err(rmcp::Error::internal_error(
                 "Allowed characters: digits (0-9), lowercase letters (a-z), hyphen (-)",
                 None,
             ));
@@ -72,7 +77,11 @@ impl ElmService {
         let data = match &*lock {
             Some(cache) => cache.clone(),
             None => {
-                let data = self.client.fetch_all_packages().await?;
+                let data = self
+                    .client
+                    .fetch_all_packages()
+                    .await
+                    .map_err(convert_error)?;
                 *lock = Some(data.clone());
                 data
             }
@@ -87,17 +96,16 @@ impl ElmService {
     }
 
     #[tool(description = "Compiles and validates the current Elm project")]
-    async fn validate(&self) -> Result<CallToolResult, McpError> {
-        let path = get_project_folder()?;
+    async fn validate(&self) -> Result<CallToolResult, rmcp::Error> {
         let output = std::process::Command::new("elm")
             .arg("make")
             .arg("--output=/dev/null")
             .arg("--report=json")
             .arg("./src/Main.elm")
-            .current_dir(&path)
+            .current_dir(&self.project_folder)
             .output()
             .map_err(|e| {
-                McpError::internal_error(format!("Failed to run Elm compiler: {}", e), None)
+                rmcp::Error::internal_error(format!("Failed to run Elm compiler: {}", e), None)
             })?;
 
         let err = String::from_utf8_lossy(&output.stderr);
@@ -107,7 +115,7 @@ impl ElmService {
             )]))
         } else {
             let err_data: serde_json::Value = serde_json::from_str(&err)
-                .map_err(|_| McpError::internal_error("Compile error serialize fail", None))?;
+                .map_err(|_| rmcp::Error::internal_error("Compile error serialize fail", None))?;
             let out = Content::json(err_data)?;
             Ok(CallToolResult::success(vec![out]))
         }
@@ -118,16 +126,15 @@ impl ElmService {
         &self,
         #[tool(param)] username: String,
         #[tool(param)] package: String,
-    ) -> Result<CallToolResult, McpError> {
-        let path = get_project_folder()?;
+    ) -> Result<CallToolResult, rmcp::Error> {
         let package = validate_package(&username, &package)?;
         let output = std::process::Command::new("elm-json")
             .arg("install")
             .arg("--yes")
             .arg(package)
-            .current_dir(&path)
+            .current_dir(&self.project_folder)
             .output()
-            .map_err(|e| McpError::internal_error(format!("Failed to install: {}", e), None))?;
+            .map_err(|e| rmcp::Error::internal_error(format!("Failed to install: {}", e), None))?;
         let err = String::from_utf8_lossy(&output.stderr);
         if err.is_empty() {
             Ok(CallToolResult::success(vec![Content::text(
@@ -144,16 +151,17 @@ impl ElmService {
         &self,
         #[tool(param)] username: String,
         #[tool(param)] package: String,
-    ) -> Result<CallToolResult, McpError> {
-        let path = get_project_folder()?;
+    ) -> Result<CallToolResult, rmcp::Error> {
         let package = validate_package(&username, &package)?;
         let output = std::process::Command::new("elm-json")
             .arg("uninstall")
             .arg("--yes")
             .arg(package)
-            .current_dir(&path)
+            .current_dir(&self.project_folder)
             .output()
-            .map_err(|e| McpError::internal_error(format!("Failed to uninstall: {}", e), None))?;
+            .map_err(|e| {
+                rmcp::Error::internal_error(format!("Failed to uninstall: {}", e), None)
+            })?;
         let err = String::from_utf8_lossy(&output.stderr);
         if err.is_empty() {
             Ok(CallToolResult::success(vec![Content::text(
@@ -184,7 +192,7 @@ impl ServerHandler for ElmService {
         &self,
         _request: InitializeRequestParam,
         context: RequestContext<RoleServer>,
-    ) -> Result<InitializeResult, McpError> {
+    ) -> Result<InitializeResult, rmcp::Error> {
         if let Some(http_request_part) = context.extensions.get::<axum::http::request::Parts>() {
             let initialize_headers = &http_request_part.headers;
             let initialize_uri = &http_request_part.uri;
@@ -199,9 +207,9 @@ fn validate_string(val: &str) -> bool {
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-fn validate_package(username: &str, package: &str) -> Result<String, McpError> {
+fn validate_package(username: &str, package: &str) -> Result<String, rmcp::Error> {
     if !validate_string(username) && !validate_string(package) {
-        return Err(McpError::internal_error(
+        return Err(rmcp::Error::internal_error(
             "Allowed characters: digits (0-9), lowercase letters (a-z), hyphen (-)",
             None,
         ));
@@ -209,9 +217,6 @@ fn validate_package(username: &str, package: &str) -> Result<String, McpError> {
     Ok(format!("{username}/{package}"))
 }
 
-fn get_project_folder() -> Result<String, McpError> {
-    let Some(path) = ELM_PROJECT_FOLDER else {
-        return Err(McpError::internal_error("Missing project path", None));
-    };
-    Ok(path.to_string())
+fn convert_error(err: anyhow::Error) -> rmcp::Error {
+    rmcp::Error::internal_error(err.to_string(), None)
 }
