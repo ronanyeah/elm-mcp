@@ -15,15 +15,17 @@ pub struct ElmService {
     packages: Arc<Mutex<Option<Vec<Package>>>>,
     client: ElmClient,
     project_folder: String,
+    entry_file: String,
 }
 
 #[tool(tool_box)]
 impl ElmService {
-    pub fn new(project_folder: &str) -> Self {
+    pub fn new(project_folder: &str, entry_file: &str) -> Self {
         Self {
             packages: Default::default(),
             client: ElmClient::new(),
             project_folder: project_folder.to_string(),
+            entry_file: entry_file.to_string(),
         }
     }
 
@@ -101,7 +103,7 @@ impl ElmService {
             .arg("make")
             .arg("--output=/dev/null")
             .arg("--report=json")
-            .arg("./src/Main.elm")
+            .arg(&self.entry_file)
             .current_dir(&self.project_folder)
             .output()
             .map_err(|e| {

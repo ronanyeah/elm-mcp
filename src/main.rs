@@ -6,6 +6,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 struct Env {
     port: u16,
     project_folder: String,
+    entry_file: Option<String>,
 }
 
 #[tokio::main]
@@ -47,7 +48,9 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let ct = sse_server.with_service(move || ElmService::new(&env.project_folder));
+    let entry_file = env.entry_file.unwrap_or("./src/Main.elm".to_string());
+
+    let ct = sse_server.with_service(move || ElmService::new(&env.project_folder, &entry_file));
 
     tokio::signal::ctrl_c().await?;
     ct.cancel();

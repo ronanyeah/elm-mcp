@@ -12,4 +12,5 @@ An MCP server for agentic development of Elm applications.
 
 #### How to use
 
-- `PORT=1234 PROJECT_FOLDER=/path/to/elm/app cargo run`
+- `PORT=1234 PROJECT_FOLDER="/path/to/elm/app" cargo run`
+    - `ENTRY_FILE="./source/Foo.elm"` can also be used. Defaults to `./src/Main.elm`.
