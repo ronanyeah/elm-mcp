@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.99"
 axum = "0.8.4"
 envy = "0.4.2"
-reqwest = { version = "0.12.19", features = ["json"] }
-rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "a66f66a", features = ["transport-sse-server"] }
+reqwest = { version = "0.12.23", features = ["json"] }
+rmcp = { version = "0.6.0", features = ["transport-worker", "transport-streamable-http-server"] }
 serde = "1.0.219"
-serde_json = "1.0.140"
-tokio = { version = "1.45.1", features = ["full"] }
-tokio-util = "0.7.15"
+serde_json = "1.0.143"
+tokio = { version = "1.47.1", features = ["full"] }
+tokio-util = "0.7.16"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

@@ -1,11 +1,13 @@
 use crate::client::{ElmClient, Package};
 use rmcp::{
+    handler::server::tool::{Parameters, ToolRouter},
     model::{
         CallToolResult, Content, Implementation, InitializeRequestParam, InitializeResult,
         ProtocolVersion, ServerCapabilities, ServerInfo,
     },
+    schemars,
     service::RequestContext,
-    tool, RoleServer, ServerHandler,
+    tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -16,9 +18,28 @@ pub struct ElmService {
     client: ElmClient,
     project_folder: String,
     entry_file: String,
+    tool_router: ToolRouter<ElmService>,
 }
 
-#[tool(tool_box)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PackageRequest {
+    pub package: String,
+    pub username: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct DocsRequest {
+    pub package: String,
+    pub username: String,
+    pub version: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SearchRequest {
+    pub query: String,
+}
+
+#[tool_router]
 impl ElmService {
     pub fn new(project_folder: &str, entry_file: &str) -> Self {
         Self {
@@ -26,15 +47,15 @@ impl ElmService {
             client: ElmClient::new(),
             project_folder: project_folder.to_string(),
             entry_file: entry_file.to_string(),
+            tool_router: Self::tool_router(),
         }
     }
 
     #[tool(description = "Gets the latest available package version for <USERNAME>/<PACKAGE>")]
     async fn get_latest_package_version(
         &self,
-        #[tool(param)] username: String,
-        #[tool(param)] package: String,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(PackageRequest { package, username }): Parameters<PackageRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let latest_version = self
             .client
             .get_latest_package_version(&username, &package)
@@ -46,10 +67,12 @@ impl ElmService {
     #[tool(description = "Gets the docs for a specified Elm package")]
     async fn get_docs(
         &self,
-        #[tool(param)] username: String,
-        #[tool(param)] package: String,
-        #[tool(param)] version: String,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(DocsRequest {
+            package,
+            username,
+            version,
+        }): Parameters<DocsRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let docs = self
             .client
             .get_docs(&username, &package, &version)
@@ -64,12 +87,12 @@ impl ElmService {
     )]
     async fn search_packages(
         &self,
-        #[tool(param)] search_string: String,
-    ) -> Result<CallToolResult, rmcp::Error> {
-        let string_is_valid = validate_string(&search_string);
+        Parameters(SearchRequest { query }): Parameters<SearchRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let string_is_valid = validate_string(&query);
 
         if !string_is_valid {
-            return Err(rmcp::Error::internal_error(
+            return Err(rmcp::ErrorData::internal_error(
                 "Allowed characters: digits (0-9), lowercase letters (a-z), hyphen (-)",
                 None,
             ));
@@ -88,7 +111,7 @@ impl ElmService {
                 data
             }
         };
-        let val = search_string.to_lowercase();
+        let val = query.to_lowercase();
         let results: Vec<_> = data
             .into_iter()
             .filter(|pkg| pkg.name.contains(&val))
@@ -98,7 +121,7 @@ impl ElmService {
     }
 
     #[tool(description = "Compiles and validates the current Elm project")]
-    async fn validate(&self) -> Result<CallToolResult, rmcp::Error> {
+    async fn validate(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let output = std::process::Command::new("elm")
             .arg("make")
             .arg("--output=/dev/null")
@@ -107,7 +130,7 @@ impl ElmService {
             .current_dir(&self.project_folder)
             .output()
             .map_err(|e| {
-                rmcp::Error::internal_error(format!("Failed to run Elm compiler: {}", e), None)
+                rmcp::ErrorData::internal_error(format!("Failed to run Elm compiler: {}", e), None)
             })?;
 
         let err = String::from_utf8_lossy(&output.stderr);
@@ -116,19 +139,19 @@ impl ElmService {
                 "OK".to_string(),
             )]))
         } else {
-            let err_data: serde_json::Value = serde_json::from_str(&err)
-                .map_err(|_| rmcp::Error::internal_error("Compile error serialize fail", None))?;
+            let err_data: serde_json::Value = serde_json::from_str(&err).map_err(|_| {
+                rmcp::ErrorData::internal_error("Compile error serialize fail", None)
+            })?;
             let out = Content::json(err_data)?;
-            Ok(CallToolResult::success(vec![out]))
+            Ok(CallToolResult::error(vec![out]))
         }
     }
 
     #[tool(description = "Adds a package to current Elm project")]
     async fn add_package(
         &self,
-        #[tool(param)] username: String,
-        #[tool(param)] package: String,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(PackageRequest { package, username }): Parameters<PackageRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let package = validate_package(&username, &package)?;
         let output = std::process::Command::new("elm-json")
             .arg("install")
@@ -136,7 +159,9 @@ impl ElmService {
             .arg(package)
             .current_dir(&self.project_folder)
             .output()
-            .map_err(|e| rmcp::Error::internal_error(format!("Failed to install: {}", e), None))?;
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("Failed to install: {}", e), None)
+            })?;
         let err = String::from_utf8_lossy(&output.stderr);
         if err.is_empty() {
             Ok(CallToolResult::success(vec![Content::text(
@@ -151,9 +176,8 @@ impl ElmService {
     #[tool(description = "Removes a package from current Elm project")]
     async fn remove_package(
         &self,
-        #[tool(param)] username: String,
-        #[tool(param)] package: String,
-    ) -> Result<CallToolResult, rmcp::Error> {
+        Parameters(PackageRequest { package, username }): Parameters<PackageRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
         let package = validate_package(&username, &package)?;
         let output = std::process::Command::new("elm-json")
             .arg("uninstall")
@@ -162,7 +186,7 @@ impl ElmService {
             .current_dir(&self.project_folder)
             .output()
             .map_err(|e| {
-                rmcp::Error::internal_error(format!("Failed to uninstall: {}", e), None)
+                rmcp::ErrorData::internal_error(format!("Failed to uninstall: {}", e), None)
             })?;
         let err = String::from_utf8_lossy(&output.stderr);
         if err.is_empty() {
@@ -176,11 +200,11 @@ impl ElmService {
     }
 }
 
-#[tool(tool_box)]
+#[tool_handler]
 impl ServerHandler for ElmService {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
+            protocol_version: ProtocolVersion::V_2025_06_18,
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
@@ -194,7 +218,7 @@ impl ServerHandler for ElmService {
         &self,
         _request: InitializeRequestParam,
         context: RequestContext<RoleServer>,
-    ) -> Result<InitializeResult, rmcp::Error> {
+    ) -> Result<InitializeResult, rmcp::ErrorData> {
         if let Some(http_request_part) = context.extensions.get::<axum::http::request::Parts>() {
             let initialize_headers = &http_request_part.headers;
             let initialize_uri = &http_request_part.uri;
@@ -209,9 +233,9 @@ fn validate_string(val: &str) -> bool {
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-fn validate_package(username: &str, package: &str) -> Result<String, rmcp::Error> {
+fn validate_package(username: &str, package: &str) -> Result<String, rmcp::ErrorData> {
     if !validate_string(username) && !validate_string(package) {
-        return Err(rmcp::Error::internal_error(
+        return Err(rmcp::ErrorData::internal_error(
             "Allowed characters: digits (0-9), lowercase letters (a-z), hyphen (-)",
             None,
         ));
@@ -219,6 +243,6 @@ fn validate_package(username: &str, package: &str) -> Result<String, rmcp::Error
     Ok(format!("{username}/{package}"))
 }
 
-fn convert_error(err: anyhow::Error) -> rmcp::Error {
-    rmcp::Error::internal_error(err.to_string(), None)
+fn convert_error(err: anyhow::Error) -> rmcp::ErrorData {
+    rmcp::ErrorData::internal_error(err.to_string(), None)
 }

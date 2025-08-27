@@ -1,5 +1,7 @@
 use elm_mcp::service::ElmService;
-use rmcp::transport::sse_server::{SseServer, SseServerConfig};
+use rmcp::transport::streamable_http_server::{
+    session::local::LocalSessionManager, StreamableHttpService,
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(serde::Deserialize)]
@@ -23,37 +25,20 @@ async fn main() -> anyhow::Result<()> {
 
     let bind_address = format!("127.0.0.1:{}", env.port);
 
-    let config = SseServerConfig {
-        bind: bind_address.parse()?,
-        sse_path: "/sse".to_string(),
-        post_path: "/message".to_string(),
-        ct: tokio_util::sync::CancellationToken::new(),
-        sse_keep_alive: None,
-    };
-
-    let (sse_server, router) = SseServer::new(config);
-
-    let listener = tokio::net::TcpListener::bind(sse_server.config.bind).await?;
-
-    let ct = sse_server.config.ct.child_token();
-
-    let server = axum::serve(listener, router).with_graceful_shutdown(async move {
-        ct.cancelled().await;
-        tracing::info!("sse server cancelled");
-    });
-
-    tokio::spawn(async move {
-        if let Err(e) = server.await {
-            tracing::error!(error = %e, "sse server shutdown with error");
-        }
-    });
-
     let entry_file = env.entry_file.unwrap_or("./src/Main.elm".to_string());
 
-    let ct = sse_server.with_service(move || ElmService::new(&env.project_folder, &entry_file));
+    println!("Project folder: {}", env.project_folder);
+    println!("Entry file: {}", entry_file);
 
-    tokio::signal::ctrl_c().await?;
-    ct.cancel();
+    let service = StreamableHttpService::new(
+        move || Ok(ElmService::new(&env.project_folder, &entry_file)),
+        LocalSessionManager::default().into(),
+        Default::default(),
+    );
+
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let tcp_listener = tokio::net::TcpListener::bind(bind_address).await?;
+    axum::serve(tcp_listener, router).await?;
 
     Ok(())
 }
